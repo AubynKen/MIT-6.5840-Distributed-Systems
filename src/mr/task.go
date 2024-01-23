@@ -1,61 +1,57 @@
 package mr
 
+import "fmt"
+
 type TaskType uint8
 
 const (
-	REDUCE_TYPE TaskType = iota
-	MAP_TYPE
-	TERMINATE_TYPE // used to indicate that the worker should terminate
+	ReduceType TaskType = iota
+	MapType
+	TerminateType // used to indicate that the worker should terminate
 )
 
 type TaskStatus uint8
 
 const (
-	IDLE TaskStatus = iota
-	IN_PROGRESS
-	COMPLETED
+	Idle TaskStatus = iota
+	InProgress
+	Completed
 )
 
-type Task interface {
-	Type() TaskType
-	Index() int // index of the task in the list of tasks of the same type
+type Task struct {
+	Type          TaskType
+	InputFiles    []string
+	Index         int // index of the task in the list of tasks of the same type
+	NMap, NReduce int
 }
 
-// MapTask implements the Task interface
-type MapTask struct {
-	InputFile string
-	index     int
+func MakeMapTask(inputFile string, index, nMap, nReduce int) Task {
+	return Task{
+		Type:       MapType,
+		InputFiles: []string{inputFile},
+		Index:      index,
+		NMap:       nMap,
+		NReduce:    nReduce,
+	}
 }
 
-func (t *MapTask) Type() TaskType {
-	return MAP_TYPE
+func MakeReduceTask(index, nMap, nReduce int) Task {
+	task := Task{
+		Type:       ReduceType,
+		InputFiles: make([]string, 0, nMap),
+		Index:      index,
+		NMap:       nMap,
+		NReduce:    nReduce,
+	}
+
+	for i := 0; i < nMap; i++ {
+		task.InputFiles = append(task.InputFiles,
+			fmt.Sprintf("mr-%d-%d", i, index))
+	}
+
+	return task
 }
 
-func (t *MapTask) Index() int {
-	return t.index
-}
-
-// ReduceTask implements the Task interface
-type ReduceTask struct {
-	InputFiles []string
-	index      int
-}
-
-func (t *ReduceTask) Type() TaskType {
-	return REDUCE_TYPE
-}
-
-func (t *ReduceTask) Index() int {
-	return t.index
-}
-
-// TerminateTask implements the Task interface
-type TerminateTask struct{}
-
-func (t *TerminateTask) Type() TaskType {
-	return TERMINATE_TYPE
-}
-
-func (t *TerminateTask) Index() int {
-	return -1
+func MakeTerminateTask() Task {
+	return Task{Type: TerminateType}
 }

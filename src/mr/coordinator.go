@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"encoding/gob"
 	"log"
 	"sync"
 	"time"
@@ -28,9 +29,6 @@ type Coordinator struct {
 	reduceStart  []time.Time
 }
 
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
 func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
@@ -42,7 +40,7 @@ func findFirstIdleTask(
 	statusSlice []TaskStatus) (index int, found bool) {
 
 	for index, status := range statusSlice {
-		if status == IDLE {
+		if status == Idle {
 			return index, true
 		}
 	}
@@ -51,17 +49,17 @@ func findFirstIdleTask(
 
 // findOldestInProgressTask returns the index of the oldest in progress task and true if found,
 // otherwise -1 and false
-func findOldestInProgressTask(tasks []Task, statusSlice []TaskStatus) (index int, found bool) {
+func findOldestInProgressTask(statusSlice []TaskStatus, startSlice []time.Time) (index int, found bool) {
 	oldest, index := time.Now(), -1
 
-	for idx, status := range c.mapStatus {
-		if status != IN_PROGRESS {
+	for idx, status := range statusSlice {
+		if status != InProgress {
 			continue
 		}
 
 		index = idx
-		if c.mapStart[index].Before(oldest) {
-			oldest = c.mapStart[index]
+		if startSlice[index].Before(oldest) {
+			oldest = startSlice[index]
 		}
 	}
 
@@ -78,17 +76,19 @@ func (c *Coordinator) RequestTask(
 	c.Lock()
 	defer c.Unlock()
 
+	gob.Register(Task{})
+
 	// if there are idle map tasks, return one
 	idx, found := findFirstIdleTask(c.mapStatus)
 	if found {
 		reply.Task = c.mapTasks[idx]
-		c.mapStatus[idx] = IN_PROGRESS
+		c.mapStatus[idx] = InProgress
 		c.mapStart[idx] = time.Now()
 		return nil
 	}
 
 	// if there are in progress map tasks, return the oldest one
-	idx, found = findOldestInProgressTask(c.mapTasks, c.mapStatus)
+	idx, found = findOldestInProgressTask(c.mapStatus, c.mapStart)
 	if found {
 		reply.Task = c.mapTasks[idx]
 		c.mapStart[idx] = time.Now()
@@ -99,13 +99,13 @@ func (c *Coordinator) RequestTask(
 	idx, found = findFirstIdleTask(c.reduceStatus)
 	if found {
 		reply.Task = c.reduceTasks[idx]
-		c.reduceStatus[idx] = IN_PROGRESS
+		c.reduceStatus[idx] = InProgress
 		c.reduceStart[idx] = time.Now()
 		return nil
 	}
 
 	// if there are in progress reduce tasks, return the oldest one
-	idx, found = findOldestInProgressTask(c.reduceTasks, c.reduceStatus)
+	idx, found = findOldestInProgressTask(c.reduceStatus, c.reduceStart)
 	if found {
 		reply.Task = c.reduceTasks[idx]
 		c.reduceStart[idx] = time.Now()
@@ -113,35 +113,79 @@ func (c *Coordinator) RequestTask(
 	}
 
 	// if there are no idle or in progress tasks, return terminate task
-	reply.Task = &TerminateTask{}
+	reply.Task = MakeTerminateTask()
+	return nil
+}
+
+// ReportTask is an RPC handler that reports the completion of a task
+func (c *Coordinator) ReportTask(
+	args *ReportTaskArgs, _ *ReportTaskReply,
+) error {
+	c.Lock()
+	defer c.Unlock()
+
+	switch args.Task.Type {
+	case MapType:
+		c.mapStatus[args.Task.Index] = Completed
+	case ReduceType:
+		c.reduceStatus[args.Task.Index] = Completed
+	default:
+		log.Fatalf("Unknown task type: %v", args.Task)
+	}
+
 	return nil
 }
 
 // start a thread that listens for RPCs from worker.go
 func (c *Coordinator) server() {
-	rpc.Register(c)
+	err := rpc.Register(c)
+	if err != nil {
+		log.Fatal("rpc error:", err)
+	}
 	rpc.HandleHTTP()
 	//l, e := net.Listen("tcp", ":1234")
-	sockname := coordinatorSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
+	socketName := coordinatorSock()
+	err = os.Remove(socketName)
+	if err != nil {
+		//log.Fatal("remove socket error:", err)
+		log.Println("remove socket error:", err)
+	}
+	l, e := net.Listen("unix", socketName)
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
-	go http.Serve(l, nil)
+	go func() {
+		err := http.Serve(l, nil)
+		if err != nil {
+			log.Fatal("serve error:", err)
+		}
+	}()
 }
 
-// main/mrcoordinator.go calls Done() periodically to find out
+// Done is called by main/mrcoordinator.go periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
+	c.Lock()
+	defer c.Unlock()
 
-	// Your code here.
+	// check if all map tasks are completed
+	for _, status := range c.mapStatus {
+		if status != Completed {
+			return false
+		}
+	}
 
-	return ret
+	// check if all reduce tasks are completed
+	for _, status := range c.reduceStatus {
+		if status != Completed {
+			return false
+		}
+	}
+
+	return true
 }
 
-// create a Coordinator.
+// MakeCoordinator create a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
@@ -151,14 +195,26 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
 		inputFiles: files,
 		nMap:       nMap,
-		mapTasks:   make([]Task, nMap),
+		mapTasks:   make([]Task, 0, nMap),
 		mapStatus:  make([]TaskStatus, nMap),
 		mapStart:   make([]time.Time, nMap),
 
 		nReduce:      nReduce,
-		reduceTasks:  make([]Task, nReduce),
+		reduceTasks:  make([]Task, 0, nReduce),
 		reduceStatus: make([]TaskStatus, nReduce),
 		reduceStart:  make([]time.Time, nReduce),
+	}
+
+	// create map tasks
+	for i, file := range files {
+		c.mapTasks = append(c.mapTasks, MakeMapTask(file, i, nMap, nReduce))
+		c.mapStatus[i] = Idle
+	}
+
+	// create reduce tasks
+	for i := 0; i < nReduce; i++ {
+		c.reduceTasks = append(c.reduceTasks, MakeReduceTask(i, nMap, nReduce))
+		c.reduceStatus[i] = Idle
 	}
 
 	c.server()

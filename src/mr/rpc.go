@@ -28,6 +28,12 @@ type RequestTaskReply struct {
 	Task Task
 }
 
+type ReportTaskArgs struct {
+	Task Task
+}
+
+type ReportTaskReply struct{}
+
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
 // Can't use the current directory since
