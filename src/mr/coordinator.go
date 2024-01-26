@@ -19,7 +19,7 @@ type Coordinator struct {
 	nMap      int
 	mapTasks  []Task
 	mapStatus []TaskStatus
-	// mapStart[i] is the time when the task i was assigned to a worker
+	// mapStart[i] is the time when the task 'i' was assigned to a worker
 	// this value has no meaning if the task is in progress
 	mapStart []time.Time
 
