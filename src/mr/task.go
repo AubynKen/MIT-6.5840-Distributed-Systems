@@ -5,17 +5,17 @@ import "fmt"
 type TaskType uint8
 
 const (
-	ReduceType TaskType = iota
-	MapType
-	TerminateType // used to indicate that the worker should terminate
+	TaskTypeReduce TaskType = iota
+	TaskTypeMap
+	TaskTypeTerminate // used to indicate that the worker should terminate
 )
 
 type TaskStatus uint8
 
 const (
-	Idle TaskStatus = iota
-	InProgress
-	Completed
+	taskStatusIdle TaskStatus = iota
+	taskStatusInProgress
+	taskStatusCompleted
 )
 
 type Task struct {
@@ -27,7 +27,7 @@ type Task struct {
 
 func MakeMapTask(inputFile string, index, nMap, nReduce int) Task {
 	return Task{
-		Type:       MapType,
+		Type:       TaskTypeMap,
 		InputFiles: []string{inputFile},
 		Index:      index,
 		NMap:       nMap,
@@ -37,7 +37,7 @@ func MakeMapTask(inputFile string, index, nMap, nReduce int) Task {
 
 func MakeReduceTask(index, nMap, nReduce int) Task {
 	task := Task{
-		Type:       ReduceType,
+		Type:       TaskTypeReduce,
 		InputFiles: make([]string, 0, nMap),
 		Index:      index,
 		NMap:       nMap,
@@ -53,5 +53,5 @@ func MakeReduceTask(index, nMap, nReduce int) Task {
 }
 
 func MakeTerminateTask() Task {
-	return Task{Type: TerminateType}
+	return Task{Type: TaskTypeTerminate}
 }

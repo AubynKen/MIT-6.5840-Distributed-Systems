@@ -184,17 +184,17 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 
 		switch task.Type {
-		case TerminateType:
+		case TaskTypeTerminate:
 			fmt.Println("Received terminate task, terminating...")
 			return
 
-		case MapType:
+		case TaskTypeMap:
 			fmt.Println("Received map task")
 			if err := w.processMap(task); err != nil {
 				log.Fatalf("Failed to process map task: %v", err)
 			}
 
-		case ReduceType:
+		case TaskTypeReduce:
 			fmt.Println("Received reduce task")
 			if err := w.processReduce(task); err != nil {
 				log.Fatalf("Failed to process reduce task: %v", err)

@@ -2,6 +2,7 @@ package mr
 
 import (
 	"encoding/gob"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -16,17 +17,19 @@ type Coordinator struct {
 
 	inputFiles []string
 
-	nMap      int
-	mapTasks  []Task
-	mapStatus []TaskStatus
-	// mapStart[i] is the time when the task 'i' was assigned to a worker
-	// this value has no meaning if the task is in progress
-	mapStart []time.Time
+	nMap           int
+	mapTasks       []Task
+	mapStatus      []TaskStatus
+	mapStart       []time.Time // time when the task was assigned to a worker
+	nMapInProgress int
+	nMapCompleted  int
 
-	nReduce      int
-	reduceTasks  []Task
-	reduceStatus []TaskStatus
-	reduceStart  []time.Time
+	nReduce          int
+	reduceTasks      []Task
+	reduceStatus     []TaskStatus
+	reduceStart      []time.Time
+	nReduceDone      int
+	nReduceCompleted int
 }
 
 // init registers Task with gob so that it can be used for RPC
@@ -41,38 +44,59 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 
 // findFirstIdleTask returns the index of the first idle task and true if found,
 // otherwise -1 and false
-func findFirstIdleTask(
-	statusSlice []TaskStatus) (index int, found bool) {
+func (c *Coordinator) findFirstIdleTask(taskType TaskType) (index int, found bool, err error) {
+	var tasksStatuses []TaskStatus
 
-	for index, status := range statusSlice {
-		if status == Idle {
-			return index, true
+	switch taskType {
+	case TaskTypeMap:
+		tasksStatuses = c.mapStatus
+	case TaskTypeReduce:
+		tasksStatuses = c.reduceStatus
+	default:
+		return -1, false, fmt.Errorf("unknown job type: %v", taskType)
+	}
+
+	for index, status := range tasksStatuses {
+		if status == taskStatusIdle {
+			return index, true, nil
 		}
 	}
-	return -1, false
+	return -1, false, nil
 }
 
 // findOldestInProgressTask returns the index of the oldest in progress task and true if found,
 // otherwise -1 and false
-func findOldestInProgressTask(statusSlice []TaskStatus, startSlice []time.Time) (index int, found bool) {
-	oldest, index := time.Now(), -1
+func (c *Coordinator) findOldestInProgressTask(taskType TaskType) (index int, found bool, err error) {
+	var statusSlice []TaskStatus
+	var startSlice []time.Time
 
+	switch taskType {
+	case TaskTypeMap:
+		statusSlice = c.mapStatus
+		startSlice = c.mapStart
+	case TaskTypeReduce:
+		statusSlice = c.reduceStatus
+		startSlice = c.reduceStart
+	default:
+		return -1, false, fmt.Errorf("unknown job type: %v", taskType)
+	}
+
+	oldest, index, found := time.Now(), -1, false
 	for idx, status := range statusSlice {
-		if status != InProgress {
+		if status != taskStatusInProgress {
 			continue
 		}
 
-		index = idx
+		index, found = idx, true
 		if startSlice[index].Before(oldest) {
 			oldest = startSlice[index]
 		}
 	}
 
-	if index == -1 {
-		return -1, false
-	}
-	return index, true
+	return index, found, nil
 }
+
+type findTaskFunc func(taskType TaskType) (taskIndex int, found bool, err error)
 
 // RequestTask is an RPC handler that returns a task to a worker
 func (c *Coordinator) RequestTask(
@@ -81,38 +105,38 @@ func (c *Coordinator) RequestTask(
 	c.Lock()
 	defer c.Unlock()
 
-	// if there are idle map tasks, return one
-	idx, found := findFirstIdleTask(c.mapStatus)
-	if found {
-		reply.Task = c.mapTasks[idx]
-		c.mapStatus[idx] = InProgress
-		c.mapStart[idx] = time.Now()
-		return nil
-	}
+	for _, taskType := range []TaskType{TaskTypeMap, TaskTypeReduce} {
+		idx, found, err := c.findFirstIdleTask(taskType)
+		if err != nil {
+			return fmt.Errorf("error finding idle task: %v", err)
+		}
+		if found {
+			switch taskType {
+			case TaskTypeMap:
+				reply.Task = c.mapTasks[idx]
+				c.mapStatus[idx] = taskStatusInProgress
+				c.mapStart[idx] = time.Now()
+			case TaskTypeReduce:
+				reply.Task = c.reduceTasks[idx]
+				c.reduceStatus[idx] = taskStatusInProgress
+				c.reduceStart[idx] = time.Now()
+			}
+			return nil
+		}
 
-	// if there are in progress map tasks, return the oldest one
-	idx, found = findOldestInProgressTask(c.mapStatus, c.mapStart)
-	if found {
-		reply.Task = c.mapTasks[idx]
-		c.mapStart[idx] = time.Now()
-		return nil
-	}
-
-	// if there are idle reduce tasks, return one
-	idx, found = findFirstIdleTask(c.reduceStatus)
-	if found {
-		reply.Task = c.reduceTasks[idx]
-		c.reduceStatus[idx] = InProgress
-		c.reduceStart[idx] = time.Now()
-		return nil
-	}
-
-	// if there are in progress reduce tasks, return the oldest one
-	idx, found = findOldestInProgressTask(c.reduceStatus, c.reduceStart)
-	if found {
-		reply.Task = c.reduceTasks[idx]
-		c.reduceStart[idx] = time.Now()
-		return nil
+		idx, found, err = c.findOldestInProgressTask(taskType)
+		if err != nil {
+			return fmt.Errorf("error finding oldest in progress task: %v", err)
+		}
+		if found {
+			switch taskType {
+			case TaskTypeMap:
+				reply.Task = c.mapTasks[idx]
+			case TaskTypeReduce:
+				reply.Task = c.reduceTasks[idx]
+			}
+			return nil
+		}
 	}
 
 	// if there are no idle or in progress tasks, return terminate task
@@ -128,10 +152,10 @@ func (c *Coordinator) ReportTask(
 	defer c.Unlock()
 
 	switch args.Task.Type {
-	case MapType:
-		c.mapStatus[args.Task.Index] = Completed
-	case ReduceType:
-		c.reduceStatus[args.Task.Index] = Completed
+	case TaskTypeMap:
+		c.mapStatus[args.Task.Index] = taskStatusCompleted
+	case TaskTypeReduce:
+		c.reduceStatus[args.Task.Index] = taskStatusCompleted
 	default:
 		log.Fatalf("Unknown task type: %v", args.Task)
 	}
@@ -173,14 +197,14 @@ func (c *Coordinator) Done() bool {
 
 	// check if all map tasks are completed
 	for _, status := range c.mapStatus {
-		if status != Completed {
+		if status != taskStatusCompleted {
 			return false
 		}
 	}
 
 	// check if all reduce tasks are completed
 	for _, status := range c.reduceStatus {
-		if status != Completed {
+		if status != taskStatusCompleted {
 			return false
 		}
 	}
@@ -211,13 +235,13 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	// create map tasks
 	for i, file := range files {
 		c.mapTasks = append(c.mapTasks, MakeMapTask(file, i, nMap, nReduce))
-		c.mapStatus[i] = Idle
+		c.mapStatus[i] = taskStatusIdle
 	}
 
 	// create reduce tasks
 	for i := 0; i < nReduce; i++ {
 		c.reduceTasks = append(c.reduceTasks, MakeReduceTask(i, nMap, nReduce))
-		c.reduceStatus[i] = Idle
+		c.reduceStatus[i] = taskStatusIdle
 	}
 
 	c.server()
