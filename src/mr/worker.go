@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 import "log"
 import "net/rpc"
@@ -180,7 +181,9 @@ func Worker(mapf func(string, string) []KeyValue,
 	for {
 		task, ok := w.requestTask()
 		if !ok {
-			panic("Failed to request task")
+			fmt.Println("Failed to request task, retrying in 1 second...")
+			time.Sleep(time.Second)
+			continue
 		}
 
 		switch task.Type {
