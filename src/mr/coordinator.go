@@ -3,13 +3,13 @@ package mr
 import (
 	"encoding/gob"
 	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
 	"sync"
 	"time"
 )
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
 
 type Coordinator struct {
 	sync.Mutex
