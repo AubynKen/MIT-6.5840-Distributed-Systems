@@ -29,6 +29,11 @@ type Coordinator struct {
 	reduceStart  []time.Time
 }
 
+// init registers Task with gob so that it can be used for RPC
+func init() {
+	gob.Register(Task{})
+}
+
 func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
@@ -75,8 +80,6 @@ func (c *Coordinator) RequestTask(
 ) error {
 	c.Lock()
 	defer c.Unlock()
-
-	gob.Register(Task{})
 
 	// if there are idle map tasks, return one
 	idx, found := findFirstIdleTask(c.mapStatus)
